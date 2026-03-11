@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <metas charset="UTF-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <title>Simple Plot</title>
@@ -12,27 +12,28 @@
     <canvas id="myChart" width="400" height="200"></canvas>
     <script>
       // add a comment like this
-      let port;   // Assume this is your open serial port object 
-      let reader; // Assume this is your readable stream reader
+      let port;   
+      let reader; 
+
       const ctx = document.getElementById('myChart').getContext('2d');
       const MAX_DATA_POINTS = 100;
 
       const myChart = new Chart(ctx, {
-        type: 'line', // You can use 'line', 'bar', 'pie', etc.
+        type: 'line',
         data: {
-          labels: [], // Labels for your X-axis
+          labels: [],
           datasets: [{
             label: 'Float Values',
-            data: [], // The float values you want to plot
+            data: [],
             backgroundColor: 'rgba(75, 192, 192, 0.2)',
             borderColor: 'rgba(0, 0, 0, 1)',
             borderWidth: 1,
-            tension: 0.1 // Optional: for smoother line updates
+            tension: 0.1
           }]
         },
         options: {
-          responsive: true, // Ensure chart is responsive
-          animation: false, // Disable animation to avoid issues
+          responsive: true,
+          animation: false,
           scales: {
             x: {
               title: {
@@ -47,7 +48,6 @@
         }
       });
 
-      // Function to format time labels 
       function formatTimeLabel(date) { 
         const hours = date.getHours().toString().padStart(2, '0');
         const minutes = date.getMinutes().toString().padStart(2, '0');
@@ -55,22 +55,17 @@
         return `${hours}:${minutes}:${seconds}`;
       }
 
-      // Function to update the chart with new data
       function updateChart(value) {
         const now = new Date(); 
-        myChart.data.labels.push(formatTimeLabel(now)); // Add current time as label
-        myChart.data.datasets[0].data.push(value); // Add new data point
+        myChart.data.labels.push(formatTimeLabel(now));
+        myChart.data.datasets[0].data.push(value);
         
-        // Remove old data points if we exceed MAX_DATA_POINTS
         if(myChart.data.datasets[0].data.length > MAX_DATA_POINTS){
-          myChart.data.labels.shift(); // Remove the oldest label
-          myChart.data.datasets[0].data.shift(); // Remove the oldest data point
+          myChart.data.labels.shift();
+          myChart.data.datasets[0].data.shift();
         }
 
-        // Check if dataset remains visible
         myChart.data.datasets[0].hidden = false;
-
-        // Explicitly set the line color to ensure it stays consistent 
         myChart.data.datasets[0].borderColor = 'rgba(255, 99, 132, 1)';
 
         console.log(value);
@@ -83,12 +78,10 @@
           this.buffer = [];
         }
 
-        // Method to add data to the buffer
         enqueue(data) {
-          this.buffer.push(...data);  // the ... is spread syntax data can be multiple items. [0],[1],[2],...
+          this.buffer.push(...data);
         }
 
-        // Method to remove data from the buffer
         dequeue(length) {
           if (length > this.buffer.length) {
             length = this.buffer.length;
@@ -98,7 +91,6 @@
           return new Uint8Array(data);
         }
 
-        // Method to peek at the data in the buffer without removing it
         peek(length) {
           if (length > this.buffer.length) {
             length = this.buffer.length;
@@ -106,7 +98,6 @@
           return new Uint8Array(this.buffer.slice(0, length));
         }
 
-        // Method to get the current length of the buffer
         length() {
           return this.buffer.length;
         }
@@ -118,12 +109,10 @@
           this.startFrameDelimiter = new TextEncoder().encode(":::");
         }
 
-        // Method to append new data to the buffer
         appendData(data) {
           this.fifoBuffer.enqueue(data);
         }
 
-        // Method to check for the start of frame ":::"
         findStartOfFrame() {
           const bufferLength = this.fifoBuffer.length();
           const data = this.fifoBuffer.peek(bufferLength);
@@ -137,29 +126,27 @@
               }
             }
             if (match) {
-              return i; // Return the index of the start of frame
+              return i;
             }
           }
-          return -1; // Return -1 if not found
+          return -1;
         }
 
-        // Method to parse packets from the buffer
         parsePackets() {
           const packets = [];
           let startIndex = this.findStartOfFrame();
 
           while (startIndex !== -1 && startIndex + 6 <= this.fifoBuffer.length()) {
-            // Adjust to your packet structure
-            const header = this.fifoBuffer.peek(3); // ":::"
-            const payloadLength = 4; // looking for one float (4-bytes)
-            const packetLength = 3 + payloadLength; // ":::": 3 bytes + Payload
+
+            const payloadLength = 4;
+            const packetLength = 3 + payloadLength;
 
             if (startIndex + packetLength <= this.fifoBuffer.length()) {
               const packet = this.fifoBuffer.dequeue(packetLength);
               packets.push(packet);
               startIndex = this.findStartOfFrame();
             } else {
-              break; // Not enough data for a full packet
+              break;
             }
           }
 
@@ -167,7 +154,6 @@
         }
       }
 
-      // Usage example:
       const packetParser = new PacketParser();
 
       async function openSerialPort() {
@@ -176,7 +162,8 @@
             port = await navigator.serial.requestPort();
             await port.open({ baudRate: 38400 });
 
-            const reader = port.readable.getReader();
+            reader = port.readable.getReader();
+
             while (true) {
               const { value, done } = await reader.read();
                 if (done) {
@@ -212,7 +199,6 @@
         const encoder = new TextEncoder();
 
         try {
-          // Hardware often expects a newline to trigger a command
           await writer.write(encoder.encode("Hello!" + "\n")); 
           console.log("Sent:", "Hello!");
           await writer.write(encoder.encode("Hello!" + "\n"));
@@ -220,7 +206,7 @@
         } catch (err) {
           console.error("Send failed:", err);
         } finally {
-          writer.releaseLock(); // CRITICAL: If you don't release, you can't send again!
+          writer.releaseLock();
         }
       } 
     </script>
