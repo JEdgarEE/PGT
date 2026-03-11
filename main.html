@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <metas charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Simple Plot</title>
+  </head>
+  <body>
+    <button class="js-connect-button" onclick="openSerialPort();">Connect</button>
+    <button class="js-send-button" onclick="SendSerialPort();">Send</button>
+    <canvas id="myChart" width="400" height="200"></canvas>
+    <script>
+      let port;   // Assume this is your open serial port object 
+      let reader; // Assume this is your readable stream reader
+      const ctx = document.getElementById('myChart').getContext('2d');
+      const MAX_DATA_POINTS = 100;
+
+      const myChart = new Chart(ctx, {
+        type: 'line', // You can use 'line', 'bar', 'pie', etc.
+        data: {
+          labels: [], // Labels for your X-axis
+          datasets: [{
+            label: 'Float Values',
+            data: [], // The float values you want to plot
+            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+            borderColor: 'rgba(0, 0, 0, 1)',
+            borderWidth: 1,
+            tension: 0.1 // Optional: for smoother line updates
+          }]
+        },
+        options: {
+          responsive: true, // Ensure chart is responsive
+          animation: false, // Disable animation to avoid issues
+          scales: {
+            x: {
+              title: {
+                display:true,
+                text: 'Time'
+              }
+            },
+            y: {
+              beginAtZero: false
+            }
+          }
+        }
+      });
+
+      // Function to format time labels 
+      function formatTimeLabel(date) { 
+        const hours = date.getHours().toString().padStart(2, '0');
+        const minutes = date.getMinutes().toString().padStart(2, '0');
+        const seconds = date.getSeconds().toString().padStart(2, '0');
+        return `${hours}:${minutes}:${seconds}`;
+      }
+
+      // Function to update the chart with new data
+      function updateChart(value) {
+        const now = new Date(); 
+        myChart.data.labels.push(formatTimeLabel(now)); // Add current time as label
+        myChart.data.datasets[0].data.push(value); // Add new data point
+        
+        // Remove old data points if we exceed MAX_DATA_POINTS
+        if(myChart.data.datasets[0].data.length > MAX_DATA_POINTS){
+          myChart.data.labels.shift(); // Remove the oldest label
+          myChart.data.datasets[0].data.shift(); // Remove the oldest data point
+        }
+
+        // Check if dataset remains visible
+        myChart.data.datasets[0].hidden = false;
+
+        // Explicitly set the line color to ensure it stays consistent 
+        myChart.data.datasets[0].borderColor = 'rgba(255, 99, 132, 1)';
+
+        console.log(value);
+
+        myChart.update();
+      }
+
+      class FIFOBuffer {
+        constructor() {
+          this.buffer = [];
+        }
+
+        // Method to add data to the buffer
+        enqueue(data) {
+          this.buffer.push(...data);  // the ... is spread syntax data can be multiple items. [0],[1],[2],...
+        }
+
+        // Method to remove data from the buffer
+        dequeue(length) {
+          if (length > this.buffer.length) {
+            length = this.buffer.length;
+          }
+          const data = this.buffer.slice(0, length);
+          this.buffer = this.buffer.slice(length);
+          return new Uint8Array(data);
+        }
+
+        // Method to peek at the data in the buffer without removing it
+        peek(length) {
+          if (length > this.buffer.length) {
+            length = this.buffer.length;
+          }
+          return new Uint8Array(this.buffer.slice(0, length));
+        }
+
+        // Method to get the current length of the buffer
+        length() {
+          return this.buffer.length;
+        }
+      }
+
+      class PacketParser {
+        constructor() {
+          this.fifoBuffer = new FIFOBuffer();
+          this.startFrameDelimiter = new TextEncoder().encode(":::");
+        }
+
+        // Method to append new data to the buffer
+        appendData(data) {
+          this.fifoBuffer.enqueue(data);
+        }
+
+        // Method to check for the start of frame ":::"
+        findStartOfFrame() {
+          const bufferLength = this.fifoBuffer.length();
+          const data = this.fifoBuffer.peek(bufferLength);
+
+          for (let i = 0; i <= data.length - this.startFrameDelimiter.length; i++) {
+            let match = true;
+            for (let j = 0; j < this.startFrameDelimiter.length; j++) {
+              if (data[i + j] !== this.startFrameDelimiter[j]) {
+                match = false;
+                break;
+              }
+            }
+            if (match) {
+              return i; // Return the index of the start of frame
+            }
+          }
+          return -1; // Return -1 if not found
+        }
+
+        // Method to parse packets from the buffer
+        parsePackets() {
+          const packets = [];
+          let startIndex = this.findStartOfFrame();
+
+          while (startIndex !== -1 && startIndex + 6 <= this.fifoBuffer.length()) {
+            // Adjust to your packet structure
+            const header = this.fifoBuffer.peek(3); // ":::"
+            const payloadLength = 4; // looking for one float (4-bytes)
+            const packetLength = 3 + payloadLength; // ":::": 3 bytes + Payload
+
+            if (startIndex + packetLength <= this.fifoBuffer.length()) {
+              const packet = this.fifoBuffer.dequeue(packetLength);
+              packets.push(packet);
+              startIndex = this.findStartOfFrame();
+            } else {
+              break; // Not enough data for a full packet
+            }
+          }
+
+          return packets;
+        }
+      }
+
+      // Usage example:
+      const packetParser = new PacketParser();
+
+      async function openSerialPort() {
+        if ("serial" in navigator) {
+          try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 38400 });
+
+            const reader = port.readable.getReader();
+            while (true) {
+              const { value, done } = await reader.read();
+                if (done) {
+                  break;
+                }
+                if (value) { 
+                packetParser.appendData(value);
+                const packets = packetParser.parsePackets();
+                for (const packet of packets) {             
+                  const lastFourBytes = packet.slice(packet.length - 4);
+                  const buffer = lastFourBytes.buffer;
+                  const dataView = new DataView(buffer);
+                  const floatValue = dataView.getFloat32(0, true);
+                  updateChart(floatValue);
+                }
+              }
+            }
+          } catch (error) {
+            console.error("Failed to read from serial port:", error);
+          }
+        } else {
+          console.error("Web Serial API is not supported in this browser.");
+        }
+      } 
+
+      async function SendSerialPort() {
+        if (!port || !port.writable) {
+          console.error("Port not open! Click the Open button first.");
+          return;
+        }
+
+        const writer = port.writable.getWriter();
+        const encoder = new TextEncoder();
+
+        try {
+          // Hardware often expects a newline to trigger a command
+          await writer.write(encoder.encode("Hello!" + "\n")); 
+          console.log("Sent:", "Hello!");
+          await writer.write(encoder.encode("Hello!" + "\n"));
+          console.log("Sent:", "Hello!");
+        } catch (err) {
+          console.error("Send failed:", err);
+        } finally {
+          writer.releaseLock(); // CRITICAL: If you don't release, you can't send again!
+        }
+      } 
+    </script>
+  </body>
+</html>
+
+
+
