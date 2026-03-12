@@ -7,208 +7,145 @@
     <title>Simple Plot</title>
   </head>
   <body>
-    <button class="js-connect-button" onclick="openSerialPort();">Connect</button>
-    <button class="js-send-button" onclick="SendSerialPort();">Send</button>
-    <canvas id="myChart" width="400" height="200"></canvas>
+    <button onclick="openSerialPort();">Connect</button>
+    <button onclick="SendSerialPort();">Send</button>
+    <canvas id="myChart" width="600" height="300"></canvas>
     <script>
-      // add a comment like this
-      let port;   
-      let reader; 
-
-      const ctx = document.getElementById('myChart').getContext('2d');
+      let port, reader;
       const MAX_DATA_POINTS = 100;
 
-      const myChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: [],
-          datasets: [{
-            label: 'Float Values',
-            data: [],
-            backgroundColor: 'rgba(75, 192, 192, 0.2)',
-            borderColor: 'rgba(0, 0, 0, 1)',
-            borderWidth: 1,
-            tension: 0.1
-          }]
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          scales: {
-            x: {
-              title: {
-                display:true,
-                text: 'Time'
-              }
-            },
-            y: {
-              beginAtZero: false
-            }
+      const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"];
+      const colors = ["red","blue","green","orange","purple","brown","cyan"];
+
+      const ctx = document.getElementById('myChart').getContext('2d');
+
+      const datasets = variableNames.map((name,index)=>({
+        label: name,
+        data: [],
+        borderColor: colors[index % colors.length],
+        tension: 0.1
+      }));
+
+      const myChart = new Chart(ctx,{
+        type:"line",
+        data:{ labels:[], datasets: datasets },
+        options:{
+          responsive:true,
+          animation:false,
+          plugins: {
+            title: { display:true, text:"Simple Plot" }
+          },
+          scales:{
+            x:{ title:{ display:true, text:"Time" } },
+            y:{ beginAtZero:false }
           }
         }
       });
 
-      function formatTimeLabel(date) { 
-        const hours = date.getHours().toString().padStart(2, '0');
-        const minutes = date.getMinutes().toString().padStart(2, '0');
-        const seconds = date.getSeconds().toString().padStart(2, '0');
-        return `${hours}:${minutes}:${seconds}`;
+      function formatTimeLabel(date){ 
+        const h=date.getHours().toString().padStart(2,'0');
+        const m=date.getMinutes().toString().padStart(2,'0');
+        const s=date.getSeconds().toString().padStart(2,'0');
+        return `${h}:${m}:${s}`;
       }
 
-      function updateChart(value) {
-        const now = new Date(); 
+      function updateChart(value,datasetIndex){
+        const now = new Date();
         myChart.data.labels.push(formatTimeLabel(now));
-        myChart.data.datasets[0].data.push(value);
-        
-        if(myChart.data.datasets[0].data.length > MAX_DATA_POINTS){
+        myChart.data.datasets[datasetIndex].data.push(value);
+
+        if(myChart.data.datasets[datasetIndex].data.length > MAX_DATA_POINTS){
           myChart.data.labels.shift();
-          myChart.data.datasets[0].data.shift();
+          myChart.data.datasets.forEach(ds => ds.data.shift());
         }
 
-        myChart.data.datasets[0].hidden = false;
-        myChart.data.datasets[0].borderColor = 'rgba(255, 99, 132, 1)';
-
-        console.log(value);
-
+        myChart.data.datasets[datasetIndex].hidden = false;
         myChart.update();
       }
 
       class FIFOBuffer {
-        constructor() {
-          this.buffer = [];
-        }
-
-        enqueue(data) {
-          this.buffer.push(...data);
-        }
-
-        dequeue(length) {
-          if (length > this.buffer.length) {
-            length = this.buffer.length;
-          }
-          const data = this.buffer.slice(0, length);
-          this.buffer = this.buffer.slice(length);
+        constructor(){ this.buffer=[]; }
+        enqueue(data){ this.buffer.push(...data); }
+        dequeue(len){ 
+          if(len>this.buffer.length) len=this.buffer.length;
+          const data=this.buffer.slice(0,len);
+          this.buffer=this.buffer.slice(len);
           return new Uint8Array(data);
         }
-
-        peek(length) {
-          if (length > this.buffer.length) {
-            length = this.buffer.length;
-          }
-          return new Uint8Array(this.buffer.slice(0, length));
-        }
-
-        length() {
-          return this.buffer.length;
-        }
+        peek(len){ if(len>this.buffer.length) len=this.buffer.length; return new Uint8Array(this.buffer.slice(0,len)); }
+        length(){ return this.buffer.length; }
       }
 
       class PacketParser {
-        constructor() {
+        constructor(){
           this.fifoBuffer = new FIFOBuffer();
           this.startFrameDelimiter = new TextEncoder().encode(":::");
         }
-
-        appendData(data) {
-          this.fifoBuffer.enqueue(data);
-        }
-
-        findStartOfFrame() {
-          const bufferLength = this.fifoBuffer.length();
-          const data = this.fifoBuffer.peek(bufferLength);
-
-          for (let i = 0; i <= data.length - this.startFrameDelimiter.length; i++) {
-            let match = true;
-            for (let j = 0; j < this.startFrameDelimiter.length; j++) {
-              if (data[i + j] !== this.startFrameDelimiter[j]) {
-                match = false;
-                break;
-              }
+        appendData(data){ this.fifoBuffer.enqueue(data); }
+        findStartOfFrame(){
+          const bufferLength=this.fifoBuffer.length();
+          const data=this.fifoBuffer.peek(bufferLength);
+          for(let i=0;i<=data.length-this.startFrameDelimiter.length;i++){
+            let match=true;
+            for(let j=0;j<this.startFrameDelimiter.length;j++){
+              if(data[i+j]!==this.startFrameDelimiter[j]){ match=false; break; }
             }
-            if (match) {
-              return i;
-            }
+            if(match) return i;
           }
           return -1;
         }
-
-        parsePackets() {
-          const packets = [];
-          let startIndex = this.findStartOfFrame();
-
-          while (startIndex !== -1 && startIndex + 6 <= this.fifoBuffer.length()) {
-
-            const payloadLength = 4;
-            const packetLength = 3 + payloadLength;
-
-            if (startIndex + packetLength <= this.fifoBuffer.length()) {
-              const packet = this.fifoBuffer.dequeue(packetLength);
+        parsePackets(){
+          const packets=[];
+          let startIndex=this.findStartOfFrame();
+          while(startIndex!==-1 && startIndex+3+4*variableNames.length <= this.fifoBuffer.length()){
+            const payloadLength=4*variableNames.length;
+            const packetLength=3+payloadLength;
+            if(startIndex+packetLength <= this.fifoBuffer.length()){
+              const packet=this.fifoBuffer.dequeue(packetLength);
               packets.push(packet);
-              startIndex = this.findStartOfFrame();
-            } else {
-              break;
-            }
+              startIndex=this.findStartOfFrame();
+            } else break;
           }
-
           return packets;
         }
       }
 
-      const packetParser = new PacketParser();
+      const packetParser=new PacketParser();
 
-      async function openSerialPort() {
-        if ("serial" in navigator) {
-          try {
-            port = await navigator.serial.requestPort();
-            await port.open({ baudRate: 38400 });
-
-            reader = port.readable.getReader();
-
-            while (true) {
-              const { value, done } = await reader.read();
-                if (done) {
-                  break;
-                }
-                if (value) { 
-                packetParser.appendData(value);
-                const packets = packetParser.parsePackets();
-                for (const packet of packets) {             
-                  const lastFourBytes = packet.slice(packet.length - 4);
-                  const buffer = lastFourBytes.buffer;
-                  const dataView = new DataView(buffer);
-                  const floatValue = dataView.getFloat32(0, true);
-                  updateChart(floatValue);
+      async function openSerialPort(){
+        if(!("serial" in navigator)){ console.error("Web Serial API not supported"); return; }
+        try{
+          port = await navigator.serial.requestPort();
+          await port.open({baudRate:38400});
+          reader=port.readable.getReader();
+          while(true){
+            const {value,done}=await reader.read();
+            if(done) break;
+            if(value){
+              packetParser.appendData(value);
+              const packets=packetParser.parsePackets();
+              for(const packet of packets){
+                for(let i=0;i<variableNames.length;i++){
+                  const start = packet.length - 4*(variableNames.length-i);
+                  const end = start+4;
+                  const buffer = packet.slice(start,end).buffer;
+                  const floatVal = new DataView(buffer).getFloat32(0,true);
+                  updateChart(floatVal,i);
                 }
               }
             }
-          } catch (error) {
-            console.error("Failed to read from serial port:", error);
           }
-        } else {
-          console.error("Web Serial API is not supported in this browser.");
-        }
-      } 
+        }catch(err){ console.error("Failed to read serial port:",err); }
+      }
 
-      async function SendSerialPort() {
-        if (!port || !port.writable) {
-          console.error("Port not open! Click the Open button first.");
-          return;
-        }
-
-        const writer = port.writable.getWriter();
-        const encoder = new TextEncoder();
-
-        try {
-          await writer.write(encoder.encode("Hello!" + "\n")); 
-          console.log("Sent:", "Hello!");
-          await writer.write(encoder.encode("Hello!" + "\n"));
-          console.log("Sent:", "Hello!");
-        } catch (err) {
-          console.error("Send failed:", err);
-        } finally {
-          writer.releaseLock();
-        }
-      } 
+      async function SendSerialPort(){
+        if(!port||!port.writable){console.error("Port not open"); return;}
+        const writer=port.writable.getWriter();
+        const encoder=new TextEncoder();
+        try{ await writer.write(encoder.encode("Hello!\n")); }
+        catch(err){ console.error("Send failed:",err); }
+        finally{ writer.releaseLock(); }
+      }
     </script>
   </body>
 </html>
