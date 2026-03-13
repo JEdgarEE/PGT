@@ -1,153 +1,181 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <title>Simple Plot</title>
-  </head>
-  <body>
-    <button onclick="openSerialPort();">Connect</button>
-    <button onclick="SendSerialPort();">Send</button>
-    <canvas id="myChart" width="600" height="300"></canvas>
-    <script>
-      let port, reader;
-      const MAX_DATA_POINTS = 100;
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>Serial Live Chart</title>
+  <style>
+    #stats { margin-top: 20px; font-family: Arial; }
+    .variable-stats { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Serial Live Chart</h2>
+  <button onclick="openSerialPort();">Connect</button>
+  <button onclick="SendSerialPort();">Send</button>
+  <button onclick="resetChart();">Reset Chart</button>
+  <canvas id="myChart" width="800" height="400"></canvas>
+  <div id="stats"></div>
 
-      const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"];
-      const colors = ["red","blue","green","orange","purple","brown","cyan"];
+  <script>
+    let port, reader;
+    const MAX_DATA_POINTS = 100;
+    const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"];
+    const colors = ["red","blue","green","orange","purple"];
+    const latest = Array(variableNames.length).fill(0);
+    const minVals = Array(variableNames.length).fill(Infinity);
+    const maxVals = Array(variableNames.length).fill(-Infinity);
+    const sumVals = Array(variableNames.length).fill(0);
 
-      const ctx = document.getElementById('myChart').getContext('2d');
+    const ctx = document.getElementById('myChart').getContext('2d');
+    const datasets = variableNames.flatMap((name,i)=>[
+      { label: name, data: [], borderColor: colors[i], tension:0.1 },
+      { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5], tension:0.1 },
+      { label: name+" Max", data: [], borderColor: colors[i], borderDash:[5,5], tension:0.1 },
+      { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3], tension:0.1 }
+    ]);
 
-      const datasets = variableNames.map((name,index)=>({
-        label: name,
-        data: [],
-        borderColor: colors[index % colors.length],
-        tension: 0.1
-      }));
+    const myChart = new Chart(ctx,{
+      type:"line",
+      data:{ labels:[], datasets: datasets },
+      options:{
+        responsive:true,
+        animation:false,
+        plugins:{ title:{ display:true, text:"Serial Live Chart" } },
+        scales:{ x:{ title:{ display:true, text:"Time" } }, y:{ beginAtZero:false } }
+      }
+    });
 
-      const myChart = new Chart(ctx,{
-        type:"line",
-        data:{ labels:[], datasets: datasets },
-        options:{
-          responsive:true,
-          animation:false,
-          plugins: {
-            title: { display:true, text:"Simple Plot" }
-          },
-          scales:{
-            x:{ title:{ display:true, text:"Time" } },
-            y:{ beginAtZero:false }
+    function formatTime(date){
+      const h=date.getHours().toString().padStart(2,'0');
+      const m=date.getMinutes().toString().padStart(2,'0');
+      const s=date.getSeconds().toString().padStart(2,'0');
+      return `${h}:${m}:${s}`;
+    }
+
+    function updateStats(idx,value){
+      latest[idx]=value;
+      if(value<minVals[idx]) minVals[idx]=value;
+      if(value>maxVals[idx]) maxVals[idx]=value;
+      sumVals[idx]+=value;
+      const avg = sumVals[idx] / myChart.data.datasets[idx*4].data.length;
+      const statsDiv = document.getElementById('stats');
+      statsDiv.innerHTML = variableNames.map((name,i)=>
+        `<div class="variable-stats" style="color:${colors[i]}">
+          ${name} → Latest: ${latest[i].toFixed(2)}, Min: ${minVals[i].toFixed(2)}, Max: ${maxVals[i].toFixed(2)}, Avg: ${avg.toFixed(2)}
+        </div>`).join('');
+      return avg;
+    }
+
+    function updateChart(value,idx){
+      const now = new Date();
+      myChart.data.labels.push(formatTime(now));
+      const avg = updateStats(idx,value);
+      myChart.data.datasets[idx*4].data.push(value);
+      myChart.data.datasets[idx*4+1].data.push(minVals[idx]);
+      myChart.data.datasets[idx*4+2].data.push(maxVals[idx]);
+      myChart.data.datasets[idx*4+3].data.push(avg);
+
+      if(myChart.data.labels.length>MAX_DATA_POINTS){
+        myChart.data.labels.shift();
+        myChart.data.datasets.forEach(ds=>ds.data.shift());
+      }
+      myChart.update();
+    }
+
+    function resetChart(){
+      myChart.data.labels=[];
+      myChart.data.datasets.forEach(ds=>ds.data=[]);
+      latest.fill(0);
+      minVals.fill(Infinity);
+      maxVals.fill(-Infinity);
+      sumVals.fill(0);
+      document.getElementById('stats').innerHTML='';
+      myChart.update();
+    }
+
+    class FIFOBuffer{
+      constructor(){ this.buffer=[]; }
+      enqueue(data){ this.buffer.push(...data); }
+      dequeue(len){ 
+        if(len>this.buffer.length) len=this.buffer.length;
+        const data=this.buffer.slice(0,len);
+        this.buffer=this.buffer.slice(len);
+        return new Uint8Array(data);
+      }
+      peek(len){ if(len>this.buffer.length) len=this.buffer.length; return new Uint8Array(this.buffer.slice(0,len)); }
+      length(){ return this.buffer.length; }
+    }
+
+    class PacketParser{
+      constructor(){
+        this.buffer = new FIFOBuffer();
+        this.delim = new TextEncoder().encode(":::");
+      }
+      append(data){ this.buffer.enqueue(data); }
+      findStart(){
+        const d = this.buffer.peek(this.buffer.length());
+        for(let i=0;i<=d.length-this.delim.length;i++){
+          let match=true;
+          for(let j=0;j<this.delim.length;j++){
+            if(d[i+j]!==this.delim[j]){ match=false; break; }
           }
+          if(match) return i;
         }
-      });
-
-      function formatTimeLabel(date){ 
-        const h=date.getHours().toString().padStart(2,'0');
-        const m=date.getMinutes().toString().padStart(2,'0');
-        const s=date.getSeconds().toString().padStart(2,'0');
-        return `${h}:${m}:${s}`;
+        return -1;
       }
-
-      function updateChart(value,datasetIndex){
-        const now = new Date();
-        myChart.data.labels.push(formatTimeLabel(now));
-        myChart.data.datasets[datasetIndex].data.push(value);
-
-        if(myChart.data.datasets[datasetIndex].data.length > MAX_DATA_POINTS){
-          myChart.data.labels.shift();
-          myChart.data.datasets.forEach(ds => ds.data.shift());
+      parse(){
+        const packets=[];
+        let idx=this.findStart();
+        while(idx!==-1 && idx+3+4*variableNames.length<=this.buffer.length()){
+          const plen = 3+4*variableNames.length;
+          if(idx+plen<=this.buffer.length()){
+            packets.push(this.buffer.dequeue(plen));
+            idx=this.findStart();
+          } else break;
         }
-
-        myChart.data.datasets[datasetIndex].hidden = false;
-        myChart.update();
+        return packets;
       }
+    }
 
-      class FIFOBuffer {
-        constructor(){ this.buffer=[]; }
-        enqueue(data){ this.buffer.push(...data); }
-        dequeue(len){ 
-          if(len>this.buffer.length) len=this.buffer.length;
-          const data=this.buffer.slice(0,len);
-          this.buffer=this.buffer.slice(len);
-          return new Uint8Array(data);
-        }
-        peek(len){ if(len>this.buffer.length) len=this.buffer.length; return new Uint8Array(this.buffer.slice(0,len)); }
-        length(){ return this.buffer.length; }
-      }
+    const parser = new PacketParser();
 
-      class PacketParser {
-        constructor(){
-          this.fifoBuffer = new FIFOBuffer();
-          this.startFrameDelimiter = new TextEncoder().encode(":::");
-        }
-        appendData(data){ this.fifoBuffer.enqueue(data); }
-        findStartOfFrame(){
-          const bufferLength=this.fifoBuffer.length();
-          const data=this.fifoBuffer.peek(bufferLength);
-          for(let i=0;i<=data.length-this.startFrameDelimiter.length;i++){
-            let match=true;
-            for(let j=0;j<this.startFrameDelimiter.length;j++){
-              if(data[i+j]!==this.startFrameDelimiter[j]){ match=false; break; }
-            }
-            if(match) return i;
-          }
-          return -1;
-        }
-        parsePackets(){
-          const packets=[];
-          let startIndex=this.findStartOfFrame();
-          while(startIndex!==-1 && startIndex+3+4*variableNames.length <= this.fifoBuffer.length()){
-            const payloadLength=4*variableNames.length;
-            const packetLength=3+payloadLength;
-            if(startIndex+packetLength <= this.fifoBuffer.length()){
-              const packet=this.fifoBuffer.dequeue(packetLength);
-              packets.push(packet);
-              startIndex=this.findStartOfFrame();
-            } else break;
-          }
-          return packets;
-        }
-      }
-
-      const packetParser=new PacketParser();
-
-      async function openSerialPort(){
-        if(!("serial" in navigator)){ console.error("Web Serial API not supported"); return; }
-        try{
-          port = await navigator.serial.requestPort();
-          await port.open({baudRate:38400});
-          reader=port.readable.getReader();
-          while(true){
-            const {value,done}=await reader.read();
-            if(done) break;
-            if(value){
-              packetParser.appendData(value);
-              const packets=packetParser.parsePackets();
-              for(const packet of packets){
-                for(let i=0;i<variableNames.length;i++){
-                  const start = packet.length - 4*(variableNames.length-i);
-                  const end = start+4;
-                  const buffer = packet.slice(start,end).buffer;
-                  const floatVal = new DataView(buffer).getFloat32(0,true);
-                  updateChart(floatVal,i);
-                }
+    async function openSerialPort(){
+      if(!("serial" in navigator)){ console.error("Web Serial API not supported"); return; }
+      try{
+        port = await navigator.serial.requestPort();
+        await port.open({baudRate:38400});
+        reader = port.readable.getReader();
+        while(true){
+          const {value,done} = await reader.read();
+          if(done) break;
+          if(value){
+            parser.append(value);
+            const packets = parser.parse();
+            for(const packet of packets){
+              for(let i=0;i<variableNames.length;i++){
+                const start = packet.length-4*(variableNames.length-i);
+                const end = start+4;
+                const val = new DataView(packet.slice(start,end).buffer).getFloat32(0,true);
+                updateChart(val,i);
               }
             }
           }
-        }catch(err){ console.error("Failed to read serial port:",err); }
-      }
+        }
+      }catch(err){ console.error("Serial read failed:",err); }
+    }
 
-      async function SendSerialPort(){
-        if(!port||!port.writable){console.error("Port not open"); return;}
-        const writer=port.writable.getWriter();
-        const encoder=new TextEncoder();
-        try{ await writer.write(encoder.encode("Hello!\n")); }
-        catch(err){ console.error("Send failed:",err); }
-        finally{ writer.releaseLock(); }
-      }
-    </script>
-  </body>
+    async function SendSerialPort(){
+      if(!port||!port.writable){ console.error("Port not open"); return; }
+      const writer = port.writable.getWriter();
+      const encoder = new TextEncoder();
+      try{ await writer.write(encoder.encode("Hello!\n")); }
+      catch(err){ console.error("Send failed:",err); }
+      finally{ writer.releaseLock(); }
+    }
+  </script>
+</body>
 </html>
 
 
