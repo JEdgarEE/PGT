@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Chart.js library for drawing charts -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <title>Serial Live Chart</title>
   <style>
@@ -12,23 +13,40 @@
 </head>
 <body>
   <h2>Serial Live Chart</h2>
+  <!-- Buttons to control serial connection and chart -->
   <button onclick="openSerialPort();">Connect</button>
   <button onclick="SendSerialPort();">Send</button>
   <button onclick="resetChart();">Reset Chart</button>
+  
+  <!-- Canvas for rendering the chart -->
   <canvas id="myChart" width="800" height="400"></canvas>
+  
+  <!-- Container for showing latest stats -->
   <div id="stats"></div>
 
   <script>
+    // Serial port and data reader variables
     let port, reader;
+
+    // Maximum number of data points to keep in the chart
     const MAX_DATA_POINTS = 100;
+
+    // Variable names to track
     const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"];
+    
+    // Colors assigned for each variable's chart line
     const colors = ["red","blue","green","orange","purple"];
+    
+    // Arrays to store latest, min, max, and sum values for each variable
     const latest = Array(variableNames.length).fill(0);
     const minVals = Array(variableNames.length).fill(Infinity);
     const maxVals = Array(variableNames.length).fill(-Infinity);
     const sumVals = Array(variableNames.length).fill(0);
 
+    // Get chart context from canvas element
     const ctx = document.getElementById('myChart').getContext('2d');
+
+    // Prepare datasets for the chart: each variable has lines for current, min, max, avg
     const datasets = variableNames.flatMap((name,i)=>[
       { label: name, data: [], borderColor: colors[i], tension:0.1 },
       { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5], tension:0.1 },
@@ -36,6 +54,7 @@
       { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3], tension:0.1 }
     ]);
 
+    // Initialize Chart.js line chart with the datasets
     const myChart = new Chart(ctx,{
       type:"line",
       data:{ labels:[], datasets: datasets },
@@ -47,6 +66,7 @@
       }
     });
 
+    // Format Date object into HH:MM:SS string for chart labels
     function formatTime(date){
       const h=date.getHours().toString().padStart(2,'0');
       const m=date.getMinutes().toString().padStart(2,'0');
@@ -54,13 +74,16 @@
       return `${h}:${m}:${s}`;
     }
 
+    // Update statistics (latest, min, max, avg) for a variable index and update stats display
     function updateStats(idx,value){
       latest[idx]=value;
       if(value<minVals[idx]) minVals[idx]=value;
       if(value>maxVals[idx]) maxVals[idx]=value;
       sumVals[idx]+=value;
+      // Calculate average value for the variable
       const avg = sumVals[idx] / myChart.data.datasets[idx*4].data.length;
       const statsDiv = document.getElementById('stats');
+      // Update stats display with color-coded text for each variable
       statsDiv.innerHTML = variableNames.map((name,i)=>
         `<div class="variable-stats" style="color:${colors[i]}">
           ${name} → Latest: ${latest[i].toFixed(2)}, Min: ${minVals[i].toFixed(2)}, Max: ${maxVals[i].toFixed(2)}, Avg: ${avg.toFixed(2)}
@@ -68,6 +91,7 @@
       return avg;
     }
 
+    // Update the chart data with a new value for a variable index
     function updateChart(value,idx){
       const now = new Date();
       myChart.data.labels.push(formatTime(now));
@@ -77,13 +101,16 @@
       myChart.data.datasets[idx*4+2].data.push(maxVals[idx]);
       myChart.data.datasets[idx*4+3].data.push(avg);
 
+      // Remove oldest data points if exceeding max allowed
       if(myChart.data.labels.length>MAX_DATA_POINTS){
         myChart.data.labels.shift();
         myChart.data.datasets.forEach(ds=>ds.data.shift());
       }
+      // Refresh chart display
       myChart.update();
     }
 
+    // Reset chart data and stats display to initial state
     function resetChart(){
       myChart.data.labels=[];
       myChart.data.datasets.forEach(ds=>ds.data=[]);
@@ -95,6 +122,7 @@
       myChart.update();
     }
 
+    // FIFO buffer class to manage incoming serial data bytes
     class FIFOBuffer{
       constructor(){ this.buffer=[]; }
       enqueue(data){ this.buffer.push(...data); }
@@ -108,12 +136,15 @@
       length(){ return this.buffer.length; }
     }
 
+    // Packet parser to extract data packets from serial stream using delimiter
     class PacketParser{
       constructor(){
         this.buffer = new FIFOBuffer();
         this.delim = new TextEncoder().encode(":::");
       }
+      // Append new data to internal buffer
       append(data){ this.buffer.enqueue(data); }
+      // Find start index of packet delimiter in buffer
       findStart(){
         const d = this.buffer.peek(this.buffer.length());
         for(let i=0;i<=d.length-this.delim.length;i++){
@@ -125,6 +156,7 @@
         }
         return -1;
       }
+      // Parse packets fully received in buffer and dequeue them
       parse(){
         const packets=[];
         let idx=this.findStart();
@@ -139,8 +171,10 @@
       }
     }
 
+    // Create new PacketParser instance
     const parser = new PacketParser();
 
+    // Open serial port and read incoming data continuously
     async function openSerialPort(){
       if(!("serial" in navigator)){ console.error("Web Serial API not supported"); return; }
       try{
@@ -151,9 +185,11 @@
           const {value,done} = await reader.read();
           if(done) break;
           if(value){
+            // Append incoming data and parse packets
             parser.append(value);
             const packets = parser.parse();
             for(const packet of packets){
+              // Extract float values for each variable from packet and update chart
               for(let i=0;i<variableNames.length;i++){
                 const start = packet.length-4*(variableNames.length-i);
                 const end = start+4;
@@ -166,6 +202,7 @@
       }catch(err){ console.error("Serial read failed:",err); }
     }
 
+    // Send a message through the open serial port
     async function SendSerialPort(){
       if(!port||!port.writable){ console.error("Port not open"); return; }
       const writer = port.writable.getWriter();
@@ -177,6 +214,3 @@
   </script>
 </body>
 </html>
-
-
-
