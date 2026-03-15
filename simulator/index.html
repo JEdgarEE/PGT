@@ -6,7 +6,40 @@
 <body>
 
 <h2>Simulator</h2>
-<p>Initial simulator structure</p>
+<p>Serial data simulator</p>
+
+<button id="connect">Connect Serial</button>
+<button id="send">Send Data</button>
+
+<script>
+let port;
+let writer;
+
+async function connectSerial() {
+  port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 9600 });
+
+  const encoder = new TextEncoder();
+  writer = port.writable.getWriter();
+
+  console.log("Serial connected");
+}
+
+async function sendData() {
+  if (!writer) {
+    alert("Connect first");
+    return;
+  }
+
+  const data = "SIM_DATA:" + Math.floor(Math.random() * 100) + "\n";
+  await writer.write(new TextEncoder().encode(data));
+
+  console.log("Sent:", data);
+}
+
+document.getElementById("connect").addEventListener("click", connectSerial);
+document.getElementById("send").addEventListener("click", sendData);
+</script>
 
 </body>
 </html>
