@@ -19,11 +19,8 @@
   <div id="stats"></div>
 
   <script>
-    // ------------------------
-    // CONFIGURATION
-    // ------------------------
     let port, reader;
-    const MAX_DATA_POINTS = 100; // maximum number of points in chart
+    const MAX_DATA_POINTS = 100;
     const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"]; 
     const colors = ["red","blue","green","orange","purple"];
     const latest = Array(variableNames.length).fill(0);
@@ -31,9 +28,6 @@
     const maxVals = Array(variableNames.length).fill(-Infinity);
     const sumVals = Array(variableNames.length).fill(0);
 
-    // ------------------------
-    // CHART INITIALIZATION
-    // ------------------------
     const ctx = document.getElementById('myChart').getContext('2d');
     const datasets = variableNames.flatMap((name,i)=>[
       { label: name, data: [], borderColor: colors[i], tension:0.1 },
@@ -53,10 +47,6 @@
       }
     });
 
-    // ------------------------
-    // HELPER FUNCTIONS
-    // ------------------------
-    // Format Date object to HH:MM:SS
     function formatTime(date){
       const h=date.getHours().toString().padStart(2,'0');
       const m=date.getMinutes().toString().padStart(2,'0');
@@ -64,14 +54,42 @@
       return `${h}:${m}:${s}`;
     }
 
-    // Calculate checksum for a byte array
     function calculateChecksum(data){
       let sum = 0;
       for(let i=0;i<data.length;i++) sum += data[i];
       return (256 - (sum % 256)) % 256;
     }
 
-    // Update latest, min, max, and avg for a variable
+    // ✅ CREATE PACKET (FIXED)
+    function createPacket(address, content) {
+        let packet = [];
+
+        packet.push(':'.charCodeAt(0));
+
+        let length = content.length;
+        packet.push((length >> 8) & 0xFF);
+        packet.push(length & 0xFF);
+
+        packet.push((address >> 8) & 0xFF);
+        packet.push(address & 0xFF);
+
+        packet.push(0x00);
+
+        packet.push(...content);
+
+        let sum = 0;
+        for (let i = 1; i < packet.length; i++) {
+            sum += packet[i];
+        }
+
+        let checksum = (256 - (sum % 256)) % 256;
+
+        packet.push(0x00); // MSB
+        packet.push(checksum); // LSB
+
+        return new Uint8Array(packet);
+    }
+
     function updateStats(idx,value){
       latest[idx]=value;
       if(value<minVals[idx]) minVals[idx]=value;
@@ -80,13 +98,12 @@
       const avg = sumVals[idx]/myChart.data.datasets[idx*4].data.length;
       const statsDiv = document.getElementById('stats');
       statsDiv.innerHTML = variableNames.map((name,i)=>
-        `<div class="variable-stats" style="color:${colors[i]}">
+        `<div style="color:${colors[i]}">
           ${name} → Latest: ${latest[i].toFixed(2)}, Min: ${minVals[i].toFixed(2)}, Max: ${maxVals[i].toFixed(2)}, Avg: ${avg.toFixed(2)}
         </div>`).join('');
       return avg;
     }
 
-    // Update chart data for a variable
     function updateChart(value,idx){
       const now = new Date();
       myChart.data.labels.push(formatTime(now));
@@ -103,7 +120,6 @@
       myChart.update();
     }
 
-    // Reset chart and statistics
     function resetChart(){
       myChart.data.labels=[];
       myChart.data.datasets.forEach(ds=>ds.data=[]);
@@ -115,9 +131,6 @@
       myChart.update();
     }
 
-    // ------------------------
-    // FIFO BUFFER FOR SERIAL DATA
-    // ------------------------
     class FIFOBuffer{
       constructor(){ this.buffer=[]; }
       enqueue(data){ this.buffer.push(...data); }
@@ -127,13 +140,10 @@
         this.buffer=this.buffer.slice(len);
         return new Uint8Array(data);
       }
-      peek(len){ if(len>this.buffer.length) len=this.buffer.length; return new Uint8Array(this.buffer.slice(0,len)); }
+      peek(len){ return new Uint8Array(this.buffer.slice(0,len)); }
       length(){ return this.buffer.length; }
     }
 
-    // ------------------------
-    // PACKET PARSER
-    // ------------------------
     class PacketParser{
       constructor(){
         this.buffer = new FIFOBuffer();
@@ -143,19 +153,21 @@
         const packets=[];
         while(this.buffer.length()>=7){
           const peeked = this.buffer.peek(this.buffer.length());
-          if(peeked[0]!==0x3A){ this.buffer.dequeue(1); continue; } // skip until start byte ':'
-          if(peeked.length<7) break;
+          if(peeked[0]!==0x3A){ this.buffer.dequeue(1); continue; }
           const length=(peeked[1]<<8)|peeked[2];
           const totalPacketLength=1+2+2+1+length+2;
           if(peeked.length<totalPacketLength) break;
+
           const packet=this.buffer.dequeue(totalPacketLength);
           const dataForChecksum=packet.slice(1,totalPacketLength-2);
           const receivedChecksum=packet[totalPacketLength-1];
           const calculatedChecksum=calculateChecksum(dataForChecksum);
+
           if(receivedChecksum!==calculatedChecksum){
-            console.warn("Checksum mismatch, packet ignored");
+            console.warn("Checksum mismatch");
             continue;
           }
+
           packets.push(packet);
         }
         return packets;
@@ -164,64 +176,67 @@
 
     const parser = new PacketParser();
 
-    // ------------------------
-    // OPEN SERIAL PORT AND READ DATA
-    // ------------------------
     async function openSerialPort(){
-      if(!("serial" in navigator)){ console.error("Web Serial API not supported"); return; }
-      try{
-        port = await navigator.serial.requestPort();
-        await port.open({baudRate:38400});
-        reader = port.readable.getReader();
-        while(true){
-          const {value,done} = await reader.read();
-          if(done) break;
-          if(value){
-            parser.append(value);
-            const packets = parser.parse();
-            for(const packet of packets){
-              const contentStart = 1+2+2+1;
-              for(let i=0;i<variableNames.length;i++){
-                const start = contentStart+i*4;
-                const end = start+4;
-                if(end<=packet.length-2){
-                  const val=new DataView(packet.slice(start,end).buffer).getFloat32(0,true);
-                  updateChart(val,i);
-                }
+      port = await navigator.serial.requestPort();
+      await port.open({baudRate:38400});
+      reader = port.readable.getReader();
+
+      while(true){
+        const {value,done} = await reader.read();
+        if(done) break;
+
+        if(value){
+          parser.append(value);
+          const packets = parser.parse();
+
+          for(const packet of packets){
+            const contentStart = 1+2+2+1;
+
+            for(let i=0;i<variableNames.length;i++){
+              const start = contentStart+i*4;
+              const end = start+4;
+
+              if(end<=packet.length-2){
+                const val=new DataView(packet.slice(start,end).buffer).getFloat32(0,true);
+                updateChart(val,i);
               }
             }
           }
         }
-      }catch(err){ console.error("Serial read failed:",err); }
+      }
     }
 
-    // ------------------------
-    // SEND TEST PACKET WITH AUTO CONTENT
-    // ------------------------
+    // ✅ SEND USING createPacket
     async function SendSerialPort(){
-      if(!port||!port.writable){ console.error("Port not open"); return; }
+      if(!port||!port.writable){ 
+        console.error("Port not open"); 
+        return; 
+      }
+
       const writer = port.writable.getWriter();
+
       try{
-        let packet=[];
-        packet.push(0x3A); // start ':'
-        // Create content automatically based on number of variables
         const content = [];
+
+        // 🔥 FLOAT values (4 bytes each)
         for(let i=0;i<variableNames.length;i++){
-          // Example: just incremental bytes (you can change to real data)
-          content.push((i+1)*10);
+          const buffer = new ArrayBuffer(4);
+          new DataView(buffer).setFloat32(0, (i+1)*10, true);
+          content.push(...new Uint8Array(buffer));
         }
-        const length=content.length;
-        packet.push((length>>8)&0xFF);
-        packet.push(length&0xFF);
-        packet.push(0x00); packet.push(0x01); // address (example)
-        packet.push(0x00); // type
-        packet.push(...content); // add content
-        const checksum=calculateChecksum(packet.slice(1));
-        packet.push(0x00); packet.push(checksum); // add checksum
-        await writer.write(new Uint8Array(packet));
+
+        const packet = createPacket(1, content);
+
+        await writer.write(packet);
+
         console.log("Packet sent:", packet);
-      }catch(err){ console.error("Send failed:",err);}
-      finally{ writer.releaseLock(); }
+
+      }catch(err){ 
+        console.error("Send failed:",err);
+      }
+      finally{ 
+        writer.releaseLock(); 
+      }
     }
   </script>
 </body>
