@@ -3,84 +3,105 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Include Chart.js library -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <title>Serial Live Chart (Auto Content)</title>
   <style>
+    /* Styling for stats display */
     #stats { margin-top: 20px; font-family: Arial; }
   </style>
 </head>
 <body>
   <h2>Serial Live Chart (Auto Content)</h2>
+
+  <!-- Buttons for controlling serial connection and chart -->
   <button onclick="openSerialPort();">Connect</button>
   <button onclick="SendSerialPort();">Send Test Packet</button>
   <button onclick="resetChart();">Reset Chart</button>
+
+  <!-- Canvas for Chart.js -->
   <canvas id="myChart" width="800" height="400"></canvas>
   <div id="stats"></div>
 
   <script>
+    // Variables for serial port and reader
     let port, reader;
+
+    // Maximum number of data points to show on chart
     const MAX_DATA_POINTS = 100;
+
+    // Names of the variables to be plotted
     const variableNames = ["Variable1","Variable2","Variable3","Variable4","Variable5"]; 
+
+    // Colors for each variable
     const colors = ["red","blue","green","orange","purple"];
+
+    // Arrays to store latest, min, max, and sum values for stats
     const latest = Array(variableNames.length).fill(0);
     const minVals = Array(variableNames.length).fill(Infinity);
     const maxVals = Array(variableNames.length).fill(-Infinity);
     const sumVals = Array(variableNames.length).fill(0);
 
+    // Get canvas context for Chart.js
     const ctx = document.getElementById('myChart').getContext('2d');
+
+    // Create datasets for each variable: value, min, max, average
     const datasets = variableNames.flatMap((name,i)=>[
-      { label: name, data: [], borderColor: colors[i] },
-      { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5] },
-      { label: name+" Max", data: [], borderColor: colors[i], borderDash:[5,5] },
-      { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3] }
+      { label: name, data: [], borderColor: colors[i] },              // actual value
+      { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5] }, // min
+      { label: name+" Max", data: [], borderColor: colors[i], borderDash:[5,5] }, // max
+      { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3] }  // average
     ]);
 
+    // Initialize Chart.js line chart
     const myChart = new Chart(ctx,{
       type:"line",
       data:{ labels:[], datasets: datasets },
       options:{ responsive:true, animation:false }
     });
 
+    // Format timestamp for x-axis labels
     function formatTime(date){
       return date.toLocaleTimeString();
     }
 
+    // Calculate checksum for data verification
     function calculateChecksum(data){
       let sum = 0;
       for(let i=0;i<data.length;i++) sum += data[i];
       return (256 - (sum % 256)) % 256;
     }
 
-    // ✅ FIXED PACKET (checksum = 1 byte)
+    // Create a fixed packet with 1-byte checksum
     function createPacket(address, content) {
       let packet = [];
 
-      packet.push(0x3A); // ':'
+      packet.push(0x3A); // Start byte ':'
 
       let length = content.length;
-      packet.push((length >> 8) & 0xFF);
-      packet.push(length & 0xFF);
+      packet.push((length >> 8) & 0xFF); // high byte of length
+      packet.push(length & 0xFF);        // low byte of length
 
-      packet.push((address >> 8) & 0xFF);
-      packet.push(address & 0xFF);
+      packet.push((address >> 8) & 0xFF); // high byte of address
+      packet.push(address & 0xFF);        // low byte of address
 
-      packet.push(0x00); // type
+      packet.push(0x00); // packet type
 
-      packet.push(...content);
+      packet.push(...content); // data payload
 
-      // checksum (exclude start byte)
+      // checksum calculation (exclude start byte)
       let sum = 0;
       for (let i = 1; i < packet.length; i++) {
         sum += packet[i];
       }
 
       let checksum = (256 - (sum % 256)) % 256;
-
-      packet.push(checksum); // ✅ ONLY 1 BYTE
+      packet.push(checksum); // Add checksum (1 byte)
 
       return new Uint8Array(packet);
     }
 
+    // Update statistics (latest, min, max, average) and display them
     function updateStats(idx,value){
       latest[idx]=value;
       if(value<minVals[idx]) minVals[idx]=value;
@@ -99,16 +120,18 @@
       return avg;
     }
 
+    // Update Chart.js with new value for a variable
     function updateChart(value,idx){
-      myChart.data.labels.push(formatTime(new Date()));
+      myChart.data.labels.push(formatTime(new Date())); // add current time to x-axis
 
       const avg = updateStats(idx,value);
 
-      myChart.data.datasets[idx*4].data.push(value);
-      myChart.data.datasets[idx*4+1].data.push(minVals[idx]);
-      myChart.data.datasets[idx*4+2].data.push(maxVals[idx]);
-      myChart.data.datasets[idx*4+3].data.push(avg);
+      myChart.data.datasets[idx*4].data.push(value);     // value
+      myChart.data.datasets[idx*4+1].data.push(minVals[idx]); // min
+      myChart.data.datasets[idx*4+2].data.push(maxVals[idx]); // max
+      myChart.data.datasets[idx*4+3].data.push(avg);     // average
 
+      // Remove old points if exceeding MAX_DATA_POINTS
       if(myChart.data.labels.length>MAX_DATA_POINTS){
         myChart.data.labels.shift();
         myChart.data.datasets.forEach(ds=>ds.data.shift());
@@ -117,6 +140,7 @@
       myChart.update();
     }
 
+    // Reset chart and stats
     function resetChart(){
       myChart.data.labels=[];
       myChart.data.datasets.forEach(ds=>ds.data=[]);
@@ -128,6 +152,7 @@
       myChart.update();
     }
 
+    // Simple FIFO buffer class
     class FIFOBuffer{
       constructor(){ this.buffer=[]; }
       enqueue(data){ this.buffer.push(...data); }
@@ -140,6 +165,7 @@
       length(){ return this.buffer.length; }
     }
 
+    // Parser for serial packets
     class PacketParser{
       constructor(){
         this.buffer = new FIFOBuffer();
@@ -149,21 +175,23 @@
       parse(){
         const packets=[];
 
-        while(this.buffer.length()>=7){
+        while(this.buffer.length()>=7){ // minimum packet size
           const peeked = this.buffer.peek(this.buffer.length());
 
+          // look for start byte
           if(peeked[0]!==0x3A){
             this.buffer.dequeue(1);
             continue;
           }
 
-          const length=(peeked[1]<<8)|peeked[2];
-          const totalPacketLength = 1 + 2 + 2 + 1 + length + 1; // ✅ FIX
+          const length=(peeked[1]<<8)|peeked[2]; // get data length
+          const totalPacketLength = 1 + 2 + 2 + 1 + length + 1; // full packet length
 
-          if(peeked.length<totalPacketLength) break;
+          if(peeked.length<totalPacketLength) break; // wait for full packet
 
           const packet=this.buffer.dequeue(totalPacketLength);
 
+          // verify checksum
           const dataForChecksum = packet.slice(1, totalPacketLength - 1);
           const receivedChecksum = packet[totalPacketLength - 1];
           const calculatedChecksum = calculateChecksum(dataForChecksum);
@@ -182,6 +210,7 @@
 
     const parser = new PacketParser();
 
+    // Open serial port and read data continuously
     async function openSerialPort(){
       port = await navigator.serial.requestPort();
       await port.open({baudRate:38400});
@@ -196,7 +225,7 @@
           const packets = parser.parse();
 
           for(const packet of packets){
-            const contentStart = 1+2+2+1;
+            const contentStart = 1+2+2+1; // start of data
 
             for(let i=0;i<variableNames.length;i++){
               const start = contentStart+i*4;
@@ -212,6 +241,7 @@
       }
     }
 
+    // Send a test packet via serial port
     async function SendSerialPort(){
       if(!port||!port.writable){ 
         console.error("Port not open"); 
@@ -223,6 +253,7 @@
       try{
         const content = [];
 
+        // Fill content with sample float values
         for(let i=0;i<variableNames.length;i++){
           const buffer = new ArrayBuffer(4);
           new DataView(buffer).setFloat32(0, (i+1)*10, true);
