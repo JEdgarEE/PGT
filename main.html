@@ -7,7 +7,6 @@
   <title>Serial Live Chart (Auto Content)</title>
   <style>
     #stats { margin-top: 20px; font-family: Arial; }
-    .variable-stats { margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -30,28 +29,20 @@
 
     const ctx = document.getElementById('myChart').getContext('2d');
     const datasets = variableNames.flatMap((name,i)=>[
-      { label: name, data: [], borderColor: colors[i], tension:0.1 },
-      { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5], tension:0.1 },
-      { label: name+" Max", data: [], borderColor: colors[i], borderDash:[5,5], tension:0.1 },
-      { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3], tension:0.1 }
+      { label: name, data: [], borderColor: colors[i] },
+      { label: name+" Min", data: [], borderColor: colors[i], borderDash:[5,5] },
+      { label: name+" Max", data: [], borderColor: colors[i], borderDash:[5,5] },
+      { label: name+" Avg", data: [], borderColor: colors[i], borderDash:[2,3] }
     ]);
 
     const myChart = new Chart(ctx,{
       type:"line",
       data:{ labels:[], datasets: datasets },
-      options:{
-        responsive:true,
-        animation:false,
-        plugins:{ title:{ display:true, text:"Serial Live Chart (Auto Content)" } },
-        scales:{ x:{ title:{ display:true, text:"Time" } }, y:{ beginAtZero:false } }
-      }
+      options:{ responsive:true, animation:false }
     });
 
     function formatTime(date){
-      const h=date.getHours().toString().padStart(2,'0');
-      const m=date.getMinutes().toString().padStart(2,'0');
-      const s=date.getSeconds().toString().padStart(2,'0');
-      return `${h}:${m}:${s}`;
+      return date.toLocaleTimeString();
     }
 
     function calculateChecksum(data){
@@ -60,34 +51,34 @@
       return (256 - (sum % 256)) % 256;
     }
 
-    // ✅ CREATE PACKET (FIXED)
+    // ✅ FIXED PACKET (checksum = 1 byte)
     function createPacket(address, content) {
-        let packet = [];
+      let packet = [];
 
-        packet.push(':'.charCodeAt(0));
+      packet.push(0x3A); // ':'
 
-        let length = content.length;
-        packet.push((length >> 8) & 0xFF);
-        packet.push(length & 0xFF);
+      let length = content.length;
+      packet.push((length >> 8) & 0xFF);
+      packet.push(length & 0xFF);
 
-        packet.push((address >> 8) & 0xFF);
-        packet.push(address & 0xFF);
+      packet.push((address >> 8) & 0xFF);
+      packet.push(address & 0xFF);
 
-        packet.push(0x00);
+      packet.push(0x00); // type
 
-        packet.push(...content);
+      packet.push(...content);
 
-        let sum = 0;
-        for (let i = 1; i < packet.length; i++) {
-            sum += packet[i];
-        }
+      // checksum (exclude start byte)
+      let sum = 0;
+      for (let i = 1; i < packet.length; i++) {
+        sum += packet[i];
+      }
 
-        let checksum = (256 - (sum % 256)) % 256;
+      let checksum = (256 - (sum % 256)) % 256;
 
-        packet.push(0x00); // MSB
-        packet.push(checksum); // LSB
+      packet.push(checksum); // ✅ ONLY 1 BYTE
 
-        return new Uint8Array(packet);
+      return new Uint8Array(packet);
     }
 
     function updateStats(idx,value){
@@ -95,19 +86,24 @@
       if(value<minVals[idx]) minVals[idx]=value;
       if(value>maxVals[idx]) maxVals[idx]=value;
       sumVals[idx]+=value;
-      const avg = sumVals[idx]/myChart.data.datasets[idx*4].data.length;
+
+      const count = myChart.data.datasets[idx*4].data.length || 1;
+      const avg = sumVals[idx]/count;
+
       const statsDiv = document.getElementById('stats');
       statsDiv.innerHTML = variableNames.map((name,i)=>
         `<div style="color:${colors[i]}">
           ${name} → Latest: ${latest[i].toFixed(2)}, Min: ${minVals[i].toFixed(2)}, Max: ${maxVals[i].toFixed(2)}, Avg: ${avg.toFixed(2)}
         </div>`).join('');
+
       return avg;
     }
 
     function updateChart(value,idx){
-      const now = new Date();
-      myChart.data.labels.push(formatTime(now));
+      myChart.data.labels.push(formatTime(new Date()));
+
       const avg = updateStats(idx,value);
+
       myChart.data.datasets[idx*4].data.push(value);
       myChart.data.datasets[idx*4+1].data.push(minVals[idx]);
       myChart.data.datasets[idx*4+2].data.push(maxVals[idx]);
@@ -117,6 +113,7 @@
         myChart.data.labels.shift();
         myChart.data.datasets.forEach(ds=>ds.data.shift());
       }
+
       myChart.update();
     }
 
@@ -135,7 +132,6 @@
       constructor(){ this.buffer=[]; }
       enqueue(data){ this.buffer.push(...data); }
       dequeue(len){ 
-        if(len>this.buffer.length) len=this.buffer.length;
         const data=this.buffer.slice(0,len);
         this.buffer=this.buffer.slice(len);
         return new Uint8Array(data);
@@ -149,19 +145,28 @@
         this.buffer = new FIFOBuffer();
       }
       append(data){ this.buffer.enqueue(data); }
+
       parse(){
         const packets=[];
+
         while(this.buffer.length()>=7){
           const peeked = this.buffer.peek(this.buffer.length());
-          if(peeked[0]!==0x3A){ this.buffer.dequeue(1); continue; }
+
+          if(peeked[0]!==0x3A){
+            this.buffer.dequeue(1);
+            continue;
+          }
+
           const length=(peeked[1]<<8)|peeked[2];
-          const totalPacketLength=1+2+2+1+length+2;
+          const totalPacketLength = 1 + 2 + 2 + 1 + length + 1; // ✅ FIX
+
           if(peeked.length<totalPacketLength) break;
 
           const packet=this.buffer.dequeue(totalPacketLength);
-          const dataForChecksum=packet.slice(1,totalPacketLength-2);
-          const receivedChecksum=packet[totalPacketLength-1];
-          const calculatedChecksum=calculateChecksum(dataForChecksum);
+
+          const dataForChecksum = packet.slice(1, totalPacketLength - 1);
+          const receivedChecksum = packet[totalPacketLength - 1];
+          const calculatedChecksum = calculateChecksum(dataForChecksum);
 
           if(receivedChecksum!==calculatedChecksum){
             console.warn("Checksum mismatch");
@@ -170,6 +175,7 @@
 
           packets.push(packet);
         }
+
         return packets;
       }
     }
@@ -196,7 +202,7 @@
               const start = contentStart+i*4;
               const end = start+4;
 
-              if(end<=packet.length-2){
+              if(end<=packet.length-1){
                 const val=new DataView(packet.slice(start,end).buffer).getFloat32(0,true);
                 updateChart(val,i);
               }
@@ -206,7 +212,6 @@
       }
     }
 
-    // ✅ SEND USING createPacket
     async function SendSerialPort(){
       if(!port||!port.writable){ 
         console.error("Port not open"); 
@@ -218,7 +223,6 @@
       try{
         const content = [];
 
-        // 🔥 FLOAT values (4 bytes each)
         for(let i=0;i<variableNames.length;i++){
           const buffer = new ArrayBuffer(4);
           new DataView(buffer).setFloat32(0, (i+1)*10, true);
